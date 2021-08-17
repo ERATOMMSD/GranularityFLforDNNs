@@ -44,8 +44,9 @@ You can also run the original version of DeepFault or its granular version DeepF
 * save_synthesized: flag to signal if the synthesized images are saved. *False* by default. Use *True* if later you want to compare the synthesized images vs the originals using csv_image_viewer.
 
 An example of command is as follows:
-
-``python run.py --model mnist_test_model_5_30_leaky_relu --dataset mnist -SN 5 -C 2 -MC 3 --approach tarantula -S 8``
+```
+python run.py --model mnist_test_model_5_30_leaky_relu --dataset mnist -SN 5 -C 2 -MC 3 --approach tarantula -S 8
+```
 
 ## People
 * Matias Duran
