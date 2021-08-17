@@ -1,0 +1,513 @@
+from keras.datasets import mnist, cifar10
+from keras.utils import np_utils
+from keras.models import model_from_json
+from keras import backend as K
+import sys
+from sklearn.metrics import classification_report, confusion_matrix
+from math import ceil
+import numpy as np
+import h5py
+from datetime import datetime
+from os import path, makedirs
+import traceback
+import math
+import csv
+
+
+def load_CIFAR(one_hot=True):
+    (X_train, y_train), (X_test, y_test) = cifar10.load_data()
+
+    if one_hot:
+        y_train = np_utils.to_categorical(y_train, num_classes=10)
+        y_test = np_utils.to_categorical(y_test, num_classes=10)
+
+    return X_train, y_train, X_test, y_test
+
+
+def load_MNIST(one_hot=True, channel_first=True):
+    """
+    Load MNIST data
+    :param one_hot:
+    :return:
+    """
+    # Load data
+    (X_train, y_train), (X_test, y_test) = mnist.load_data()
+
+    # Preprocess dataset
+    # Normalization and reshaping of input.
+    if channel_first:
+        X_train = X_train.reshape(X_train.shape[0], 1, 28, 28)
+        X_test = X_test.reshape(X_test.shape[0], 1, 28, 28)
+    else:
+        X_train = X_train.reshape(X_train.shape[0], 28, 28, 1)
+        X_test = X_test.reshape(X_test.shape[0], 28, 28, 1)
+
+    X_train = X_train.astype('float32')
+    X_test = X_test.astype('float32')
+    X_train /= 255
+    X_test /= 255
+
+    if one_hot:
+        # For output, it is important to change number to one-hot vector.
+        y_train = np_utils.to_categorical(y_train, num_classes=10)
+        y_test = np_utils.to_categorical(y_test, num_classes=10)
+
+    return X_train, y_train, X_test, y_test
+
+
+def load_model(model_name):
+    print(model_name)
+    json_file = open(model_name + '.json', 'r')
+    print('okx')
+    loaded_model_json = json_file.read()
+    json_file.close()
+    model = model_from_json(loaded_model_json)
+    # load weights into model
+    model.load_weights(model_name + '.h5')
+
+    model.compile(loss='categorical_crossentropy',
+                  optimizer='adam',
+                  metrics=['accuracy'])
+
+    print("Model structure loaded from ", model_name)
+    return model
+
+
+def get_layer_outs_old(model, class_specific_test_set):
+    inp = model.input  # input placeholder
+    outputs = [layer.output for layer in model.layers]  # all layer outputs
+    functors = [K.function([inp] + [K.learning_phase()], [out]) for out in outputs]  # evaluation functions
+    layer_outs = [func([class_specific_test_set, 1.]) for func in functors]
+
+    return layer_outs
+
+
+def get_layer_outs(model, test_input):
+    inp = model.input  # input placeholder
+    outputs = [layer.output for layer in model.layers]  # all layer outputs
+    functors = [K.function([inp], [out]) for out in outputs]  # evaluation functions
+    layer_outs = [func([test_input]) for func in functors]
+
+    return layer_outs
+
+
+def get_python_version():
+    if sys.version_info > (3, 0):
+        # Python 3 code in this block
+        return 3
+    else:
+        # Python 2 code in this block
+        return 2
+
+
+def show_image(vector):
+    img = vector
+    plt.imshow(img)
+    plt.show()
+
+
+def calculate_prediction_metrics(Y_test, Y_pred, score):
+    """
+    Calculate classification report and confusion matrix
+    :param Y_test:
+    :param Y_pred:
+    :param score:
+    :return:
+    """
+    # Find test and prediction classes
+    Y_test_class = np.argmax(Y_test, axis=1)
+    Y_pred_class = np.argmax(Y_pred, axis=1)
+
+    classifications = np.absolute(Y_test_class - Y_pred_class)
+
+    correct_classifications = []
+    incorrect_classifications = []
+    for i in range(len(classifications)):
+        if classifications[i] == 0:
+            correct_classifications.append(i)
+        else:
+            incorrect_classifications.append(i)
+
+    # Accuracy of the predicted values
+    print(classification_report(Y_test_class, Y_pred_class))
+    print(confusion_matrix(Y_test_class, Y_pred_class))
+
+    assert (sum([np.argmax(Y_test[i]) == np.argmax(Y_pred[i]) for i in range(len(Y_test))]) == len(
+        correct_classifications)), \
+        "the old calculation was different, but why?"
+    acc = len(correct_classifications) / len(Y_test)
+    if not math.isclose(acc, score[1], rel_tol=0.000001):
+        print("Caught this error: Accuracy results don't match to score")
+
+
+def get_dummy_dominants(model, dominants):
+    import random
+    # dominant = {x: random.sample(range(model.layers[x].output_shape[1]), 2) for x in range(1, len(model.layers))}
+    dominant = {x: random.sample(range(0, 10), len(dominants[x])) for x in range(1, len(dominants) + 1)}
+    return dominant
+
+
+def save_perturbed_test(x_perturbed, y_perturbed, filename):
+    # save X
+    with h5py.File(filename + '_perturbations_x.h5', 'w') as hf:
+        hf.create_dataset("x_perturbed", data=x_perturbed)
+
+    # save Y
+    with h5py.File(filename + '_perturbations_y.h5', 'w') as hf:
+        hf.create_dataset("y_perturbed", data=y_perturbed)
+
+    return
+
+
+def load_perturbed_test(filename):
+    # read X
+    with h5py.File(filename + '_perturbations_x.h5', 'r') as hf:
+        x_perturbed = hf["x_perturbed"][:]
+
+    # read Y
+    with h5py.File(filename + '_perturbations_y.h5', 'r') as hf:
+        y_perturbed = hf["y_perturbed"][:]
+
+    return x_perturbed, y_perturbed
+
+
+def save_perturbed_test_groups(x_perturbed, y_perturbed, filename, group_index):
+    # save X
+    filename = filename + '_perturbations.h5'
+    with h5py.File(filename, 'a') as hf:
+        group = hf.create_group('group' + str(group_index))
+        group.create_dataset("x_perturbed", data=x_perturbed)
+        group.create_dataset("y_perturbed", data=y_perturbed)
+
+    print("Classifications saved in ", filename)
+
+    return
+
+
+def load_perturbed_test_groups(filename, group_index):
+    with h5py.File(filename + '_perturbations.h5', 'r') as hf:
+        group = hf.get('group' + str(group_index))
+        x_perturbed = group.get('x_perturbed').value
+        y_perturbed = group.get('y_perturbed').value
+
+        return x_perturbed, y_perturbed
+
+
+def create_experiment_dir(experiment_path, approach, susp_num, dataset):
+    # define experiment name, create directory experiments directory if it
+    # doesnt exist
+    experiment_name = experiment_path + '/' + dataset + '/SN' + str(susp_num) + '_' + approach
+
+    if not path.exists(experiment_path):
+        makedirs(experiment_path)
+    if not path.exists(experiment_path + '/' + dataset):
+        makedirs(experiment_path + '/' + dataset)
+    if not path.exists(experiment_name):
+        makedirs(experiment_name)
+
+    return experiment_name
+
+
+def save_classifications(correct_classifications, misclassifications, filename, group_index):
+    filename = filename + '_classifications.h5'
+    with h5py.File(filename, 'a') as hf:
+        group = hf.create_group('group' + str(group_index))
+        group.create_dataset("correct_classifications", data=correct_classifications)
+        group.create_dataset("misclassifications", data=misclassifications)
+
+    print("Classifications saved in ", filename)
+    return
+
+
+def load_classifications(filename, group_index):
+    filename = filename + '_classifications.h5'
+    try:
+        with h5py.File(filename, 'r') as hf:
+            group = hf.get('group' + str(group_index))
+            correct_classifications = group.get('correct_classifications').value
+            misclassifications = group.get('misclassifications').value
+
+            print("Classifications loaded from ", filename)
+            return correct_classifications, misclassifications
+    except IOError as error:
+        print("Could not open file: ", filename, "got error", error)
+        sys.exit(-1)
+
+
+def save_layer_outs(layer_outs, filename, group_index):
+    filename = filename + '_layer_outs.h5'
+    with h5py.File(filename, 'a') as hf:
+        group = hf.create_group('group' + str(group_index))
+        for i in range(len(layer_outs)):
+            group.create_dataset("layer_outs_" + str(i), data=layer_outs[i])
+
+    print("Layer outs saved in ", filename)
+    return
+
+
+def load_layer_outs(filename, group_index):
+    filename = filename + '_layer_outs.h5'
+    try:
+        with h5py.File(filename, 'r') as hf:
+            group = hf.get('group' + str(group_index))
+            i = 0
+            layer_outs = []
+            while True:
+                layer_outs.append(group.get('layer_outs_' + str(i)).value)
+                i += 1
+
+    except IOError as error:
+        print("Could not open file: ", filename, "got error", error)
+        traceback.print_exc()
+        sys.exit(-1)
+    except AttributeError:
+        # because we don't know the exact dimensions (number of layers of our network)
+        # we leave it to iterate until it throws an attribute error, and then return
+        # layer outs to the caller function
+        print("Layer outs loaded from ", filename)
+        return layer_outs
+
+
+def save_suspicious_neurons(suspicious_neurons, filename, group_index):
+    filename = filename + '_suspicious_neurons.h5'
+    with h5py.File(filename, 'a') as hf:
+        group = hf.create_group('group' + str(group_index))
+        for i in range(len(suspicious_neurons)):
+            group.create_dataset("suspicious_neurons" + str(i), data=suspicious_neurons[i])
+
+    print("Suspicious neurons saved in ", filename + '\n' + '\n')
+    return
+
+
+def load_suspicious_neurons(filename, group_index):
+    filename = filename + '_suspicious_neurons.h5'
+    try:
+        with h5py.File(filename, 'r') as hf:
+            group = hf.get('group' + str(group_index))
+            i = 0
+            suspicious_neurons = []
+            while True:
+                suspicious_neurons.append(tuple(group.get('suspicious_neurons' + str(i)).value))
+                i += 1
+
+    except IOError as error:
+        print("Could not open file: ", filename, "got error", error)
+        sys.exit(-1)
+    except AttributeError:
+        # because we don't know the exact dimensions (number of layers of our network)
+        # we leave it to iterate until it throws an attribute error, and then return
+        # layer outs to the caller function
+        print("Suspicious neurons  loaded from ", filename)
+        return suspicious_neurons
+
+
+def save_original_inputs(original_inputs, filename, group_index):
+    filename = filename + '_originals.h5'
+    with h5py.File(filename, 'a') as hf:
+        group = hf.create_group('group' + str(group_index))
+        group.create_dataset("x_original", data=original_inputs)
+
+    print("Originals saved in ", filename)
+
+    return
+
+
+def save_original_inputs_csv(original_inputs, filename, group_index):
+    aux_filename = filename
+    for i, img in enumerate(original_inputs):
+        filename = aux_filename + f'_originals{i}.csv'
+        f = open(filename, "w")
+        writer = csv.writer(f, delimiter=",")
+        for row in img[0]:
+            # row_as_list = list(row)
+            writer.writerow(row)
+    print("Originals saved in ", filename)
+
+    return
+
+
+def save_perturbed_inputs_csv(original_inputs, filename):
+    aux_filename = filename
+    for i, img in enumerate(original_inputs):
+        filename = aux_filename + f'_perturbed{i}.csv'
+        f = open(filename, "w")
+        writer = csv.writer(f, delimiter=",")
+        for row in img[0]:
+            # row_as_list = list(row)
+            writer.writerow(row)
+    print("Originals saved in ", filename)
+
+    return
+
+
+def load_inputs(filename, dataset, selection="targeted", non_granular=True, imgs_num=None):
+    selected_inputs = []
+    if imgs_num is not None:
+        imgs_amount = imgs_num
+    else:
+        imgs_amount = 10
+        if non_granular and selection == "targeted":
+            imgs_amount = 90
+    if dataset == "mnist":
+        loaded_imgs = np.loadtxt(filename)
+        reshaped_imgs = loaded_imgs.reshape((imgs_amount, 1, 28, 28))
+        for img in reshaped_imgs:
+            selected_inputs.append(img)
+    elif dataset == "cifar10":
+        loaded_imgs = np.loadtxt(filename)
+        reshaped_imgs = loaded_imgs.reshape((imgs_amount, 32, 32, 3))
+        for img in reshaped_imgs:
+            selected_inputs.append(img)
+    else:
+        assert False, f"please detail in load_inputs the shape of images used by {dataset}"
+    print("inputs to perturb loaded from ", filename)
+    return selected_inputs
+
+
+def save_inputs(filename, selected_inputs, dataset):
+    inputs_reshaped = np.array(selected_inputs).reshape((len(selected_inputs), -1))
+    np.savetxt(filename, inputs_reshaped)
+    print("Originals saved in ", filename)
+    return
+
+
+def filter_val_set(desired_class, X, Y):
+    X_class = []
+    Y_class = []
+    for x, y in zip(X, Y):
+        if y[desired_class] == 1:
+            X_class.append(x)
+            Y_class.append(y)
+
+    print("Validation set filtered for desired class: " + str(desired_class))
+
+    return np.array(X_class), np.array(Y_class)
+
+
+def filter_val_set_by_predicted(desired_class, X, Y, model):
+    X_class = []
+    Y_class = []
+
+    Y_pred = model.predict(X)
+    predictions = np.argmax(Y_pred, axis=1)
+    for x, y, p in zip(X, Y, predictions):
+        # we keep inputs misclassified as desired_class or correctly classified
+        if p == desired_class or np.argmax(y) == p:
+            X_class.append(x)
+            Y_class.append(y)
+
+    print("Validation set filtered for desired class: " + str(desired_class))
+
+    return np.array(X_class), np.array(Y_class)
+
+
+def normalize(x):
+    # utility function to normalize a tensor by its L2 norm
+    return x / (K.sqrt(K.mean(K.square(x))) + 1e-5)
+
+
+def get_trainable_layers(model):
+    trainable_layers = []
+    for layer in model.layers:
+        try:
+            weights = layer.get_weights()[0]
+            trainable_layers.append(model.layers.index(layer))
+        except:
+            pass
+
+    trainable_layers = trainable_layers[:-1]  # ignore the output layer
+
+    return trainable_layers
+
+
+def construct_spectrum_matrices(model, trainable_layers,
+                                correct_classifications, misclassifications,
+                                layer_outs, activation_threshold=0):
+    scores = []
+    num_cf = []
+    num_uf = []
+    num_cs = []
+    num_us = []
+    for tl in trainable_layers:
+        print(model.layers[tl].output_shape)
+        num_cf.append(np.zeros(model.layers[tl].output_shape[-1]))  # covered (activated) and failed
+        num_uf.append(np.zeros(model.layers[tl].output_shape[-1]))  # uncovered (not activated) and failed
+        num_cs.append(np.zeros(model.layers[tl].output_shape[-1]))  # covered and succeeded
+        num_us.append(np.zeros(model.layers[tl].output_shape[-1]))  # uncovered and succeeded
+        scores.append(np.zeros(model.layers[tl].output_shape[-1]))
+
+    for tl in trainable_layers:
+        layer_idx = trainable_layers.index(tl)
+        all_neuron_idx = range(model.layers[tl].output_shape[-1])
+        test_idx = 0
+        for l in layer_outs[tl][0]:
+            for neuron_idx in range(model.layers[tl].output_shape[-1]):
+                if test_idx in correct_classifications and np.mean(l[..., neuron_idx]) > activation_threshold:
+                    num_cs[layer_idx][neuron_idx] += 1
+                elif test_idx in correct_classifications and np.mean(l[..., neuron_idx]) < activation_threshold:
+                    num_us[layer_idx][neuron_idx] += 1
+                elif test_idx in misclassifications and np.mean(l[..., neuron_idx]) > activation_threshold:
+                    num_cf[layer_idx][neuron_idx] += 1
+                else:
+                    num_uf[layer_idx][neuron_idx] += 1
+
+            test_idx += 1
+            '''
+            covered_idx   = list(np.where(l  > 0)[0])
+            uncovered_idx = list(set(all_neuron_idx) - set(covered_idx))
+            #uncovered_idx = list(np.where(l <= 0)[0])
+            if test_idx  in correct_classifications:
+                for cov_idx in covered_idx:
+                    num_cs[layer_idx][cov_idx] += 1
+                for uncov_idx in uncovered_idx:
+                    num_us[layer_idx][uncov_idx] += 1
+            elif test_idx in misclassifications:
+                for cov_idx in covered_idx:
+                    num_cf[layer_idx][cov_idx] += 1
+                for uncov_idx in uncovered_idx:
+                    num_uf[layer_idx][uncov_idx] += 1
+            test_idx += 1
+            '''
+
+    return scores, num_cf, num_uf, num_cs, num_us
+
+
+def cone_of_influence_analysis(model, dominants):
+    hidden_layers = [l for l in dominants.keys() if len(dominants[l]) > 0]
+    target_layer = max(hidden_layers)
+
+    scores = []
+    for i in range(1, target_layer + 1):
+        scores.append(np.zeros(model.layers[i].output_shape[1]))
+
+    for i in range(2, target_layer + 1)[::-1]:
+        for j in range(model.layers[i].output_shape[1]):
+            for k in range(model.layers[i - 1].output_shape[1]):
+                relevant_weights = model.layers[i].get_weights()[0][k]
+                if (j in dominants[i] or scores[i - 1][j] > 0) and relevant_weights[j] > 0:
+                    scores[i - 2][k] += 1
+                elif (j in dominants[i] or scores[i - 1][j] > 0) and relevant_weights[j] < 0:
+                    scores[i - 2][k] -= 1
+                elif j not in dominants[i] and scores[i - 1][j] < 0 and relevant_weights[j] > 0:
+                    scores[i - 2][k] -= 1
+                elif j not in dominants[i] and scores[i - 1][j] < 0 and relevant_weights[j] < 0:
+                    scores[i - 2][k] += 1
+    print(scores)
+    return scores
+
+
+def weight_analysis(model):
+    threshold_weight = 0.1
+    deactivatables = []
+    for i in range(2, target_layer + 1):
+        for k in range(model.layers[i - 1].output_shape[1]):
+            neuron_weights = model.layers[i].get_weights()[0][k]
+            deactivate = True
+            for j in range(len(neuron_weights)):
+                if neuron_weights[j] > threshold_weight:
+                    deactivate = False
+
+            if deactivate:
+                deactivatables.append((i, k))
+
+    return deactivatables
